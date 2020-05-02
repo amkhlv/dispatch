@@ -1,0 +1,10 @@
+<config>
+  <remotePort>443</remotePort>
+  <urlPath>/seminars</urlPath>
+  <localPort>11111</localPort>
+  <dir>/home/andrei/tmp/dispatch</dir>
+  <users>
+    <user>example1@gmail.com</user>
+    <user>example2@gmail.com</user>
+  </users>
+</config>

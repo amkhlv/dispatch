@@ -1,0 +1,8 @@
+<config>
+  <proto>https</proto>
+  <site>example.com</site>
+  <GoogleClientID>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</GoogleClientID>
+  <GoogleClientSecret>xxxxxxxxxxxxxxxxxxxxxxxx</GoogleClientSecret>
+  <cert>/home/www-data/svgserver2/certificate.pem</cert>
+  <key>/home/www-data/svgserver2/key.pem</key>
+</config>
