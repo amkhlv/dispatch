@@ -267,7 +267,7 @@ getHomeR = do
                   <th #th_time> time 
                   <th #th_desc> description 
                   <th #th_link> maybe link
-                  <th #th_resp> responsible person
+                  <th #th_resp> added by
                   <th #th_delete> delete
                 $forall (d, evEs) <- getSeminarsInInterval allSems (s,e)
                   $forall evE <- evEs

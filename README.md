@@ -5,6 +5,8 @@ and tracking.
 Page shows the list of scheduled seminars and events,
 including periodic events (_e.g._ classes and regular seminars).
 
+See [deployed example](https://andreimikhailov.com/seminars/sp/list)
+
 Authorized users can login and add their own events.
 Authorization is via Google.
 Administrator keeps a list of authorized Gmail accounts.
@@ -21,7 +23,15 @@ New users can only be added by contacting administrator.
 
 ## Configuration
 
+### Two configuration files
+
 See sample files `common.xml` and `instance.xml`
+
+### Javascript file
+
+The directory specified as `<dir>...</dir>` in `instance.xml` should contain a file called `dispatch.js`.
+This file may be empty. Actually, it is just placed as `<script>` in the generated page.
+(This is a "hook" which may allow further customization)
 
 ### Certificates preparation
 
