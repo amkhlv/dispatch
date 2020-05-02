@@ -5,7 +5,7 @@ and tracking.
 Page shows the list of scheduled seminars and events,
 including periodic events (_e.g._ classes and regular seminars).
 
-See [deployed example](https://andreimikhailov.com/seminars/sp/list)
+See [deployed example](https://andreimikhailov.com/seminars/sp/string/list)
 
 Authorized users can login and add their own events.
 Authorization is via Google.
