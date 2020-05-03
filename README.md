@@ -30,8 +30,8 @@ See sample files `common.xml` and `instance.xml`
 ### Javascript file
 
 The directory specified as `<dir>...</dir>` in `instance.xml` should contain a file called `dispatch.js`.
-This file may be empty. Actually, it is just placed as `<script>` in the generated page.
-(This is a "hook" which may allow further customization)
+This file may be empty.
+(Its content is placed as `<script>` in the generated page. This is a "hook" to allow further customization.)
 
 ### Certificates preparation
 
@@ -42,6 +42,18 @@ This file may be empty. Actually, it is just placed as `<script>` in the generat
 
     openssl x509 -req -in certificate.csr -signkey key.pem -out certificate.pem
 
+### Setting up Google OAuth2.0
+
+See [explanations on developers.google.com](https://developers.google.com/identity/protocols/oauth2).
+Then, Client ID and Secret should be put in `common.xml`
+
 ## Running server
 
-	stack exec dispatch -- -c common.xml -i instance.xml
+    stack exec dispatch -- -c common.xml -i instance.xml
+
+### NGINX
+
+    location /seminars/sp/string {
+            rewrite /seminars/sp/string(.*) $1  break;
+            proxy_pass https://localhost:11111;
+    }

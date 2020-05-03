@@ -1,6 +1,6 @@
 <config>
   <remotePort>443</remotePort>
-  <urlPath>/seminars</urlPath>
+  <urlPath>/seminars/sp/string</urlPath>
   <localPort>11111</localPort>
   <dir>/home/andrei/tmp/dispatch</dir>
   <users>
