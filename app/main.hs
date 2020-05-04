@@ -300,11 +300,13 @@ getHomeR = do
       stylesheet  
       toWidgetHead [julius|#{rawJS ourjs}|]
       [whamlet|
-                                      <form method=get action=@{HomeR} enctype=#{pEncType} class="form-horizontal">
-                                        ^{pForm}
-                                      ^{semList}
-                                      <a href=@{AuthR LoginR} style="font-size:28pt">login
-                                     |]
+          <p #p_header>
+          Enter time interval:
+          <form method=get action=@{HomeR} enctype=#{pEncType} class="form-horizontal">
+            ^{pForm}
+          ^{semList}
+          <a href=@{AuthR LoginR} style="font-size:28pt">login
+        |]
     Just aid | getAll (mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ]) ->
                 defaultLayout $ do
                   toWidgetHead [julius|#{rawJS ourjs}|]
