@@ -19,7 +19,6 @@ import Yesod.Auth
 import Yesod.Auth.OAuth2 (getUserResponseJSON)
 import Yesod.Auth.OAuth2.Google
 import Yesod.Form.Bootstrap3
-import Text.Julius (RawJS (..))
 import qualified System.IO as SIO
 import Options.Applicative
 import Data.Semigroup ((<>))
@@ -33,6 +32,7 @@ import Data.Time.Clock
 import Data.Time.LocalTime
 import Data.Monoid
 import Data.Maybe
+import Text.Printf
 import Network.Wai.Handler.Warp
 import Network.Wai.Handler.WarpTLS
 import Database.Persist
@@ -88,6 +88,7 @@ mkYesod "App" [parseRoutes|
 /list HomeR GET
 /newseminar NewR POST
 /delseminar DelR POST
+/editseminar EditR GET POST
 /auth AuthR Auth getAuth
 |]
 
@@ -140,36 +141,80 @@ data NewSeminar = NewSeminar {
   , resp :: Text
 } deriving Show
 mkSeminar :: Text -> NewSeminar -> Maybe Seminar
-mkSeminar a (NewSeminar startDate startTime rWeeks description mln responsible) = do 
-  sd <- parseDay startDate 
+mkSeminar a (NewSeminar startDate startTime rWeeks description mln responsible) = do
+  sd <- parseDay startDate
   st <- parseTimeOfDay startTime
   return $ Seminar (unpack a) sd st rWeeks (unpack description) (unpack $ fromMaybe "" mln) (unpack responsible)
-seminarAForm :: String -> AForm Handler NewSeminar
-seminarAForm resp = NewSeminar
-    <$> areq textField "YYYY-MM-DD" Nothing
-    <*> areq textField "hh:mm" Nothing
-    <*> areq intField "repeat weeks" (Just 0)
-    <*> areq textField "description" Nothing
-    <*> aopt textField "maybe link"  Nothing
+seminarAForm :: Maybe NewSeminar -> String -> AForm Handler NewSeminar
+seminarAForm mOld resp = NewSeminar
+    <$> areq textField "YYYY-MM-DD" (sDate <$> mOld)
+    <*> areq textField "hh:mm" (sTime <$> mOld)
+    <*> areq intField "repeat weeks" (Just $ maybe 0 rept mOld)
+    <*> areq textField "description" (desc <$> mOld)
+    <*> aopt textField "maybe link"  (link <$> mOld)
     <*> pure (pack resp)
     <*  bootstrapSubmit ("Register" :: BootstrapSubmit Text)
-seminarForm = renderBootstrap3 (BootstrapHorizontalForm (ColSm 0) (ColSm 2) (ColSm 0) (ColSm 2))  . seminarAForm
+seminarForm m  = renderBootstrap3 (BootstrapHorizontalForm (ColSm 0) (ColSm 2) (ColSm 0) (ColSm 2)) . seminarAForm m
+formatSeminar :: Seminar -> NewSeminar
+formatSeminar s = NewSeminar {
+  sDate = pack . showGregorian $ seminarStartDate s
+  , sTime = pack . (\x -> printf "%02d" (todHour x) ++ ":" ++ printf "%02d" (todMin x)) $ seminarStartTime s
+  , rept = seminarRepeatWeeks s
+  , desc = pack $ seminarDescription s
+  , link = let sl = seminarLink s in if sl == "" then Nothing else Just $ pack sl
+  , resp = pack $ seminarOwner s
+}
+data EditSem = EditSem {
+  editId :: Int64 
+  , modifiedSeminar  :: NewSeminar
+} deriving Show
+editForm :: Int64 -> String -> Maybe NewSeminar -> Html -> MForm Handler (FormResult EditSem, Widget)
+editForm i resp mOld extra = do 
+  (iRes, iView) <- mreq hiddenField "UNUSED" (Just i)
+  (dRes, dView) <- mreq textField "YYYY-MM-DD" (sDate <$> mOld)
+  (tRes, tView) <- mreq textField "hh:mm" (sTime <$> mOld)
+  (wRes, wView) <- mreq intField "repeat weeks" (Just $ maybe 0 rept mOld)
+  (cRes, cView) <- mreq textField "description" (desc <$> mOld)
+  (lRes, lView) <- mopt textField "maybe link"  (link <$> mOld)
+  (rRes, rView) <- mreq hiddenField "UNUSED" (Just $ pack resp)
+  let w = toWidget  
+            [whamlet|
+                    #{extra}
+                    ^{fvInput iView}
+                    ^{fvInput rView}
+                    <table>
+                      <tr>
+                        <td>Date
+                        <td> ^{fvInput dView}
+                      <tr>
+                        <td>Time
+                        <td> ^{fvInput tView}
+                      <tr>
+                        <td>Repeat weeks
+                        <td> ^{fvInput wView}
+                      <tr>
+                        <td>Description
+                        <td> ^{fvInput cView}
+                      <tr>
+                        <td>Maybe link
+                        <td> ^{fvInput lView}
+                    <input type=submit value="update">
+                    |]
+  return (EditSem <$> iRes <*> (NewSeminar <$> dRes <*> tRes <*> wRes <*> cRes <*> lRes <*> rRes), w)
 
 data DelSem = DelSem {
   delId :: Int64
 } deriving Show
-delForm :: Int64 -> Html -> MForm Handler (FormResult DelSem, Widget)
-delForm i extra = do 
+keyForm :: Int64 -> Text -> Html -> MForm Handler (FormResult DelSem, Widget)
+keyForm i t extra = do
   (iRes, iView) <- mreq hiddenField "UNUSED" (Just i)
-  let w = do 
-        toWidget  [whamlet|
-                                  #{extra}
-                                  ^{fvInput iView}
-                                  <input type=submit value="delete">
-                          |]
-
+  let w = toWidget
+            [whamlet|
+                    #{extra}
+                    ^{fvInput iView}
+                    <input type=submit value=#{t}>
+                    |]
   return (DelSem <$> iRes, w)
-
 
 data Interval = Interval {
   periodStart :: Text
@@ -182,15 +227,15 @@ intervalAForm = Interval
   <*  bootstrapSubmit ("List" :: BootstrapSubmit Text)
 intervalForm = renderBootstrap3 (BootstrapHorizontalForm (ColSm 0) (ColSm 2) (ColSm 0) (ColSm 6)) intervalAForm
 
-parseDay :: Text -> Maybe Day 
+parseDay :: Text -> Maybe Day
 parseDay = parseTimeM True defaultTimeLocale "%F" . unpack
 
 parseTimeOfDay :: Text -> Maybe TimeOfDay
 parseTimeOfDay = parseTimeM True defaultTimeLocale "%R" . unpack
 
 getIntervalM :: Day -> FormResult Interval -> Maybe (Day, Day)
-getIntervalM nd (FormSuccess interval) = 
-  case (parseDay $ periodStart interval, parseDay $ periodEnd interval) of 
+getIntervalM nd (FormSuccess interval) =
+  case (parseDay $ periodStart interval, parseDay $ periodEnd interval) of
     (Just x, Just y) -> Just (x,y)
     _ -> Nothing
 getIntervalM nd FormMissing = Just (nd, addDays 2 nd)
@@ -198,22 +243,22 @@ getIntervalM nd (FormFailure _) = Nothing
 
 getSeminarsInInterval :: [Entity Seminar] -> (Day, Day) -> [(Day, [Entity Seminar])]
 getSeminarsInInterval es (s,e) = [ let f = flip Prelude.filter in
-  (d, f es $ \evt -> let  d' = (seminarStartDate $ entityVal evt) 
+  (d, f es $ \evt -> let  d' = (seminarStartDate $ entityVal evt)
                           w' = toInteger (seminarRepeatWeeks $ entityVal evt)
                       in  d >= d' && diffDays d d' <= 7 * w' && dayOfWeek d' == dayOfWeek d )
   | d <- [s..e]]
 
 collectIds :: [(Day, [Entity Seminar])] -> [Int64]
-collectIds xs = collectIds' S.empty xs 
+collectIds = collectIds' S.empty
 collectIds' acc [] = S.toList acc
-collectIds' acc ((_, es):rest) = 
-  let newids = S.fromList [ fromSqlKey (entityKey e) | e <- es ] 
+collectIds' acc ((_, es):rest) =
+  let newids = S.fromList [ fromSqlKey (entityKey e) | e <- es ]
   in collectIds' (S.union acc newids) rest
 
-lookupDelForm' i ps = case  [p | p <- ps, fst p == i] of 
-  [] -> Nothing 
+lookupKeyForm' i ps = case  [p | p <- ps, fst p == i] of
+  [] -> Nothing
   x:xs -> Just $ snd x
-lookupDelForm e ps = let i = fromSqlKey (entityKey e) in lookupDelForm' i ps
+lookupKeyForm e ps = let i = fromSqlKey (entityKey e) in lookupKeyForm' i ps
 
 errorPage :: TB.ToMarkup a => a -> WidgetFor App ()
 errorPage msg = [whamlet|
@@ -237,14 +282,14 @@ noLoginPage = [whamlet|
     <a href=@{HomeR}>main page
   |]
 
-stylesheet = addStylesheetRemote "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" 
+stylesheet = addStylesheetRemote "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css"
 
 getHomeR :: Handler Html
 getHomeR = do
   mnm <- lookupSession "_NAME"
   ((requestedPeriod, widget), periodEnc) <- runFormGet intervalForm
   (pForm, pEncType) <- generateFormGet' intervalForm
-  (nForm, nEncType) <- generateFormPost (seminarForm $ unpack $ fromMaybe "UNKNOWN" mnm)
+  (nForm, nEncType) <- generateFormPost (seminarForm Nothing $ unpack $ fromMaybe "UNKNOWN" mnm)
   dayNow <- liftIO (utctDay <$> getCurrentTime)
   ysd <- getYesod
   maid <- maybeAuthId
@@ -253,11 +298,15 @@ getHomeR = do
   let (s,e) = fromMaybe (dayNow, addDays 2 dayNow) intrvl
   let matchingSeminars = getSeminarsInInterval allSems (s,e)
   delPairs <- sequence [
-      (\f -> (i,f)) <$> generateFormPost (delForm i) 
+      (\f -> (i,f)) <$> generateFormPost (keyForm i "delete")
+      | i <- collectIds $ matchingSeminars
+    ]
+  editPairs <- sequence [
+      (\f -> (i,f)) <$> generateFormGet' (keyForm i "edit")
       | i <- collectIds $ matchingSeminars
     ]
   ourjs <- liftIO $ readFile (unpack $ buildPath [pack $ workingDir ysd, "dispatch.js"])
-  let semList = case intrvl of 
+  let semList = case intrvl of
         Just (s,e) ->
           [whamlet|
               Seminars found for period from #{show s} to #{show e}:
@@ -280,12 +329,17 @@ getHomeR = do
                       $else 
                         <td .td_link>
                           <a href=#{seminarLink $ entityVal evE}> link
-                      <td .td_delete> #{pack $ seminarResponsiblePerson $ entityVal evE}
+                      <td .td_resp> #{pack $ seminarResponsiblePerson $ entityVal evE}
                       $maybe uid <- maid
                         $if uid == (pack $ seminarOwner $ entityVal evE)
                           <td>  
-                                $maybe df <- lookupDelForm evE delPairs
+                                $maybe df <- lookupKeyForm evE delPairs
                                   <form method=post action=@{DelR} enctype=#{snd df}>
+                                    ^{fst df}
+                                $nothing 
+                                  <p> could not lookup ...
+                                $maybe df <- lookupKeyForm evE editPairs
+                                  <form method=get action=@{EditR} enctype=#{snd df}>
                                     ^{fst df}
                                 $nothing 
                                   <p> could not lookup ...
@@ -297,7 +351,7 @@ getHomeR = do
         Nothing -> errorPage ("there was an error in parsing time interval" :: String)
   case maid of
     Nothing -> defaultLayout $ do
-      stylesheet  
+      stylesheet
       toWidgetHead [julius|#{rawJS ourjs}|]
       [whamlet|
           <p #p_header>
@@ -310,7 +364,7 @@ getHomeR = do
     Just aid | getAll (mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ]) ->
                 defaultLayout $ do
                   toWidgetHead [julius|#{rawJS ourjs}|]
-                  stylesheet 
+                  stylesheet
                   [whamlet| 
                     <p #p_header>
                     <p #p_welcome> Welcome 
@@ -323,10 +377,10 @@ getHomeR = do
                       ^{pForm}
                     ^{semList}
                   |]
-             | otherwise -> 
+             | otherwise ->
                 defaultLayout $ do
                   toWidgetHead [julius|#{rawJS ourjs}|]
-                  stylesheet 
+                  stylesheet
                   [whamlet| 
                     <p #p_header>
                     <p #p_welcome> Welcome 
@@ -346,12 +400,12 @@ getHomeR = do
 postNewR :: Handler Html
 postNewR = do
   mnm <- lookupSession "_NAME"
-  ((result, widget), enctype) <- runFormPost (seminarForm $ unpack $ fromMaybe "UNKNOWN" mnm)
+  ((result, widget), enctype) <- runFormPost (seminarForm Nothing $ unpack $ fromMaybe "UNKNOWN" mnm)
   ysd <- getYesod
   case result of
         FormSuccess newSem -> do
           maid <- maybeAuthId
-          case maid of 
+          case maid of
             Just aid | getAll (mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ]) ->
                         liftIO (
                           putStrLn (unauthorizedUserMsg aid) >>
@@ -365,27 +419,71 @@ postNewR = do
                         Nothing -> defaultLayout $ errorPage ("DATE or TIME PARSE ERROR" :: String)
             _ -> defaultLayout $ errorPage ("Invalide input, please try again" :: String)
 
-postDelR :: Handler Html 
-postDelR = do 
+postDelR :: Handler Html
+postDelR = do
   maid <- maybeAuthId
-  ((result, widget), enctype) <- runFormPost (delForm (-1))
-  case maid of 
+  ((result, widget), enctype) <- runFormPost (keyForm (-1) "UNUSED")
+  case maid of
     Just aid ->
-      case result of 
-        FormSuccess ds -> do 
+      case result of
+        FormSuccess ds -> do
           let k = toSqlKey $ delId ds
           sm <- runDB $ get k
-          case sm of 
-            Just s -> 
-              let o = seminarOwner s in 
+          case sm of
+            Just s ->
+              let o = seminarOwner s in
                 if aid == pack o
-                  then do 
+                  then do
                     runDB (delete k)
                     redirect HomeR
-                  else defaultLayout $ notAuthorizedPage aid 
+                  else defaultLayout $ notAuthorizedPage aid
             Nothing -> defaultLayout $ errorPage ("there is no such record" :: String)
         _ -> defaultLayout $ errorPage("form not understood" :: String)
     Nothing -> defaultLayout noLoginPage
+
+getEditR :: Handler Html
+getEditR = do
+  ((result, widget), enctype) <- runFormGet (keyForm (-1) "UNUSED")
+  mnm <- lookupSession "_NAME"
+  case result of
+    FormSuccess ds -> do
+      let k = toSqlKey $ delId ds
+      sm <- runDB $ get k
+      case sm of
+        Just s -> do
+          (eForm, eEncType) <- generateFormPost (editForm (delId ds) (unpack $ fromMaybe "UNKNOWN" mnm) (Just $ formatSeminar s))
+          defaultLayout $ do
+            stylesheet
+            [whamlet|
+                    Modify event:
+                    <form method=post action=@{EditR} enctype=#{eEncType} class="form-horizontal">
+                      ^{eForm}
+            |]
+        Nothing -> defaultLayout $ errorPage ("there is no such record" :: String)
+
+postEditR :: Handler Html 
+postEditR = do
+  maid <- maybeAuthId
+  ((result, widget), enctype) <- runFormPost (editForm (-1) "UNUSED" Nothing)
+  case result of 
+    FormSuccess modSem -> do 
+      let k = toSqlKey $ editId modSem
+      msem <- runDB $ get k
+      case maid of 
+        Just aid ->
+          case msem of 
+            Just sem -> 
+              let o = seminarOwner sem in 
+                if aid == pack o 
+                  then
+                    case mkSeminar aid (modifiedSeminar modSem) of 
+                      Just s -> do 
+                                  runDB $ Database.Persist.replace k s 
+                                  redirect HomeR
+                      Nothing -> defaultLayout $ errorPage ("formatting error" :: String)
+                  else defaultLayout (notAuthorizedPage aid)
+            Nothing -> defaultLayout $ errorPage ("internal error" :: String)
+        Nothing -> defaultLayout $ noLoginPage
 
 main :: IO ()
 main = do
@@ -393,8 +491,8 @@ main = do
     info
     (cloparser <**> helper)
     (fullDesc <>
-     progDesc "Seminar Scheduler" <>
-     header "Seminar Scheduler")
+     progDesc "Event Scheduler" <>
+     header "Event Scheduler")
   cfgComm <- CONF.getCommonConfig $ xmlCommon clops
   cfgInst <- CONF.getInstanceConfig $ xmlInstance clops
   let workdir = pack $ CONF.dir cfgInst
@@ -412,7 +510,7 @@ main = do
                     , clientSecret = pack $ CONF.googleSecret cfgComm
                     , workingDir = unpack workdir
                     , httpManager = man
-                    , appConnPool = pool                    
+                    , appConnPool = pool
                     , logFileHandle = log
                     , users = CONF.users cfgInst
                     })
