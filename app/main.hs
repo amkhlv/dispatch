@@ -418,6 +418,7 @@ postNewR = do
                           redirect HomeR
                         Nothing -> defaultLayout $ errorPage ("DATE or TIME PARSE ERROR" :: String)
             _ -> defaultLayout $ errorPage ("Invalide input, please try again" :: String)
+        _ -> defaultLayout $ errorPage ("Something wrong with the input. Are you logged in?" :: String)
 
 postDelR :: Handler Html
 postDelR = do
