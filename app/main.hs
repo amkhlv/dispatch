@@ -59,8 +59,8 @@ data Clops = Clops { xmlCommon :: String , xmlInstance :: String }
 
 cloparser :: Parser Clops
 cloparser = Clops
-  <$> (strOption ( short 'c' <> metavar "COMM" <> help "XML common config" ))
-  <*> (strOption ( short 'i' <> metavar "INST" <> help "XML instance config"))
+  <$> strOption ( short 'c' <> metavar "COMM" <> help "XML common config" )
+  <*> strOption ( short 'i' <> metavar "INST" <> help "XML instance config")
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 Seminar
@@ -106,7 +106,7 @@ instance Yesod App where
     makeSessionBackend x = Just <$> defaultClientSessionBackend
         120    -- timeout in minutes
         (unpack $ buildPath [pack $ workingDir x, pack "client_session_key.aes"])
-    yesodMiddleware = (sslOnlyMiddleware 120) . defaultYesodMiddleware
+    yesodMiddleware = sslOnlyMiddleware 120 . defaultYesodMiddleware
 
 instance RenderMessage App FormMessage where
   renderMessage _ _ = defaultFormMessage
@@ -225,7 +225,7 @@ intervalAForm = Interval
   <$> areq textField "period starting: YYYY-MM-DD" Nothing
   <*> areq textField "period ending: YYYY-MM-DD" Nothing
   <*  bootstrapSubmit ("List" :: BootstrapSubmit Text)
-intervalForm = renderBootstrap3 (BootstrapHorizontalForm (ColSm 0) (ColSm 2) (ColSm 0) (ColSm 6)) intervalAForm
+intervalForm = renderBootstrap3 (BootstrapHorizontalForm (ColSm 0) (ColSm 3) (ColSm 0) (ColSm 5)) intervalAForm
 
 parseDay :: Text -> Maybe Day
 parseDay = parseTimeM True defaultTimeLocale "%F" . unpack
@@ -356,6 +356,7 @@ getHomeR = do
       [whamlet|
           <p #p_header>
           Enter time interval:
+          <span #tag_timeinterval>
           <form method=get action=@{HomeR} enctype=#{pEncType} class="form-horizontal">
             ^{pForm}
           ^{semList}
@@ -373,6 +374,7 @@ getHomeR = do
                     <p #p_notallowed> Unfortunately, you are not allowed to submit new events. 
                                       If you do want to submit, please contact administrator.
                     Enter time interval:
+                    <span #tag_timeinterval>
                     <form method=get action=@{HomeR} enctype=#{pEncType} class="form-horizontal">
                       ^{pForm}
                     ^{semList}
@@ -387,6 +389,7 @@ getHomeR = do
                             #{fromMaybe "UNKNOWN" mnm}
                             #{show aid} 
                     Enter time interval:
+                    <span #tag_timeinterval>
                     <form method=get action=@{HomeR} enctype=#{pEncType} class="form-horizontal">
                       ^{pForm}
                     ^{semList}
@@ -484,7 +487,7 @@ postEditR = do
                       Nothing -> defaultLayout $ errorPage ("formatting error" :: String)
                   else defaultLayout (notAuthorizedPage aid)
             Nothing -> defaultLayout $ errorPage ("internal error" :: String)
-        Nothing -> defaultLayout $ noLoginPage
+        Nothing -> defaultLayout noLoginPage
 
 main :: IO ()
 main = do
