@@ -31,7 +31,9 @@ See sample files `common.xml` and `instance.xml`
 
 The directory specified as `<dir>...</dir>` in `instance.xml` should contain a file called `dispatch.js`.
 This file may be empty.
-(Its content is placed as `<script>` in the generated page. This is a "hook" to allow further customization.)
+Its content is placed as `<script>` in the generated page. This is a "hook" to allow further customization.
+
+A sample `dispatch.js` is [included](dispatch.js)
 
 ### Certificates preparation
 
