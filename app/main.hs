@@ -71,7 +71,8 @@ Seminar
     description String
     link String
     responsiblePerson String
-    deriving Show
+    showToGroup Int
+    showToAll Int
 |]
 
 -- How to run database actions.
@@ -115,22 +116,39 @@ data GoogleUser
     = GoogleUser
     { name :: Text
     , email :: Text
+    , email_verified :: Bool
     } deriving Generic
 instance FromJSON GoogleUser
+
+type AuthID = Text
 
 instance YesodAuth App where
   type AuthId App = Text
   getAuthId creds = case getUserResponseJSON creds of
     Left _ -> return Nothing
-    Right (GoogleUser nm eml) -> do
-      setSession "_GMAIL" eml
-      setSession "_NAME" nm
-      return $ Just eml
+    Right (GoogleUser nm eml trusted) ->
+      if trusted
+      then do
+        setSession "_GMAIL" eml
+        setSession "_NAME" nm
+        return $ Just eml
+      else return Nothing
   loginDest _ = HomeR
   logoutDest _ = HomeR
   authPlugins x = [ oauth2GoogleScoped ["email", "profile"] (clientId x) (clientSecret x) ]
   authHttpManager = getsYesod httpManager
   maybeAuthId = lookupSession "_GMAIL"
+
+data RejectionReason = NotLoggedIn | NotAllowed Text
+
+idLookup :: Handler (Either RejectionReason AuthID)
+idLookup = do
+  ysd <- getYesod
+  maid <- maybeAuthId
+  case maid of
+    Just aid -> return $
+      if getAll $ mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ] then Left (NotAllowed aid) else Right aid
+    Nothing -> return $ Left NotLoggedIn
 
 data NewSeminar = NewSeminar {
   sDate :: Text
@@ -139,12 +157,14 @@ data NewSeminar = NewSeminar {
   , desc :: Text
   , link :: Maybe Text
   , resp :: Text
+  , shgrp :: Int
+  , shall :: Int
 } deriving Show
 mkSeminar :: Text -> NewSeminar -> Maybe Seminar
-mkSeminar a (NewSeminar startDate startTime rWeeks description mln responsible) = do
+mkSeminar a (NewSeminar startDate startTime rWeeks description mln responsible sg sa) = do
   sd <- parseDay startDate
   st <- parseTimeOfDay startTime
-  return $ Seminar (unpack a) sd st rWeeks (unpack description) (unpack $ fromMaybe "" mln) (unpack responsible)
+  return $ Seminar (unpack a) sd st rWeeks (unpack description) (unpack $ fromMaybe "" mln) (unpack responsible) sg sa
 seminarAForm :: Maybe NewSeminar -> String -> AForm Handler NewSeminar
 seminarAForm mOld resp = NewSeminar
     <$> areq textField "YYYY-MM-DD" (sDate <$> mOld)
@@ -153,6 +173,8 @@ seminarAForm mOld resp = NewSeminar
     <*> areq textField "description" (desc <$> mOld)
     <*> aopt textField "maybe link"  (link <$> mOld)
     <*> pure (pack resp)
+    <*> areq (radioField $ optionsPairs [("full info" :: Text, 2), ("as busy" :: Text, 1), ("hide" :: Text, 0)]) "show to group" (Just 2)
+    <*> areq (radioField $ optionsPairs [("full info" :: Text, 2), ("as busy" :: Text, 1), ("hide" :: Text, 0)]) "show to all" (Just 2)
     <*  bootstrapSubmit ("Register" :: BootstrapSubmit Text)
 seminarForm m  = renderBootstrap3 (BootstrapHorizontalForm (ColSm 0) (ColSm 2) (ColSm 0) (ColSm 2)) . seminarAForm m
 formatSeminar :: Seminar -> NewSeminar
@@ -163,6 +185,8 @@ formatSeminar s = NewSeminar {
   , desc = pack $ seminarDescription s
   , link = let sl = seminarLink s in if sl == "" then Nothing else Just $ pack sl
   , resp = pack $ seminarOwner s
+  , shgrp = seminarShowToGroup s
+  , shall = seminarShowToAll s
 }
 data EditSem = EditSem {
   editId :: Int64 
@@ -177,6 +201,8 @@ editForm i resp mOld extra = do
   (cRes, cView) <- mreq textField "description" (desc <$> mOld)
   (lRes, lView) <- mopt textField "maybe link"  (link <$> mOld)
   (rRes, rView) <- mreq hiddenField "UNUSED" (Just $ pack resp)
+  (sgRes, sgView) <- mreq (radioField $ optionsPairs [("full info" :: Text, 2), ("as busy" :: Text, 1), ("hide" :: Text, 0)]) "show to group" (shgrp <$> mOld)
+  (saRes, saView) <- mreq (radioField $ optionsPairs [("full info" :: Text, 2), ("as busy" :: Text,  1), ("hide" :: Text, 0)]) "show to all" (shall <$> mOld)
   let w = toWidget  
             [whamlet|
                     #{extra}
@@ -198,11 +224,17 @@ editForm i resp mOld extra = do
                       <tr>
                         <td>Maybe link
                         <td> ^{fvInput lView}
+                      <tr>
+                        <td>Visibility to group
+                        <td> ^{fvInput sgView}
+                      <tr>
+                        <td>Public visibility
+                        <td> ^{fvInput saView}
                     <input type=submit value="update">
                     |]
-  return (EditSem <$> iRes <*> (NewSeminar <$> dRes <*> tRes <*> wRes <*> cRes <*> lRes <*> rRes), w)
+  return (EditSem <$> iRes <*> (NewSeminar <$> dRes <*> tRes <*> wRes <*> cRes <*> lRes <*> rRes <*> sgRes <*> saRes), w)
 
-data DelSem = DelSem {
+newtype DelSem = DelSem {
   delId :: Int64
 } deriving Show
 keyForm :: Int64 -> Text -> Html -> MForm Handler (FormResult DelSem, Widget)
@@ -241,11 +273,133 @@ getIntervalM nd (FormSuccess interval) =
 getIntervalM nd FormMissing = Just (nd, addDays 2 nd)
 getIntervalM nd (FormFailure _) = Nothing
 
-getSeminarsInInterval :: [Entity Seminar] -> (Day, Day) -> [(Day, [Entity Seminar])]
-getSeminarsInInterval es (s,e) = [ let f = flip Prelude.filter in
-  (d, f es $ \evt -> let  d' = (seminarStartDate $ entityVal evt)
-                          w' = toInteger (seminarRepeatWeeks $ entityVal evt)
-                      in  d >= d' && diffDays d d' <= 7 * w' && dayOfWeek d' == dayOfWeek d )
+
+
+data ShowOption = ShowFullInfo | ShowAsBusy | Hide
+
+whatToShow :: Maybe AuthID -> Entity Seminar -> ShowOption
+whatToShow maid evt =
+  case seminarShowToAll (entityVal evt) of
+    2 -> ShowFullInfo
+    1 -> case maid of
+      Just aid ->
+        if unpack aid == seminarOwner (entityVal evt)
+        then ShowFullInfo
+        else case seminarShowToGroup (entityVal evt) of
+          2 -> ShowFullInfo
+          _ -> ShowAsBusy
+      Nothing -> ShowAsBusy
+    _ -> case maid of
+      Just aid -> 
+        if unpack aid == seminarOwner (entityVal evt)
+        then ShowFullInfo
+        else case seminarShowToGroup (entityVal evt) of
+          2 -> ShowFullInfo
+          1 -> ShowAsBusy
+          _ -> Hide
+      Nothing -> Hide
+
+
+descriptionWidget :: Maybe AuthID -> Entity Seminar -> WidgetFor App ()
+descriptionWidget maid evt = case whatToShow maid evt of
+  ShowAsBusy -> case maid of
+    Nothing -> [whamlet|
+                       <span .tag_showasbusy>
+                       <span .showasbusy> busy
+                       |]
+    Just aid ->
+      if seminarOwner (entityVal evt) == unpack aid
+      then [whamlet|
+                   <span .tag_showasbusy>
+                   <span .showasbusy> #{seminarDescription (entityVal evt)}
+                   |]
+      else [whamlet|
+                   <span .tag_showasbusy>
+                   <span .showasbusy> busy
+                   |]
+  ShowFullInfo -> case maid of
+    Nothing  -> [whamlet|
+                        <span .tag_showfullinfo_noauth>
+                        <span .showfullinfo_noauth> #{seminarDescription (entityVal evt)}
+                        |]
+    Just aid ->
+      let ownerFlag =
+            if seminarOwner (entityVal evt) == unpack aid
+            then [whamlet|<span .tag_owner>|]
+            else [whamlet|<span .tag_notme>|]
+      in
+        case seminarShowToAll (entityVal evt) of
+          2 -> [whamlet|
+                       ^{ownerFlag}
+                       <span .tag_showfullinfo_auth>
+                       <span .showfullinfo> #{seminarDescription (entityVal evt)}
+                       |]
+          1 -> case seminarShowToGroup (entityVal evt) of
+            2 -> [whamlet|
+                         ^{ownerFlag}
+                         <span .tag_busy_full>
+                         <span .busy_full> #{seminarDescription (entityVal evt)}
+                         |]
+            1 -> [whamlet|
+                         ^{ownerFlag}
+                         <span .tag_busy_busy>
+                         <span .busy_busy> #{seminarDescription (entityVal evt)}
+                         |]
+            _ -> [whamlet|
+                         ^{ownerFlag}
+                         <span .tag_busy_hide> #{seminarDescription (entityVal evt)}
+                         |]
+          _ -> case seminarShowToGroup (entityVal evt) of
+            2 -> [whamlet|
+                         ^{ownerFlag}
+                         <span .tag_hide_full>
+                         <span .hide_full> #{seminarDescription (entityVal evt)}
+                         |]
+            1 -> [whamlet|
+                         ^{ownerFlag}
+                         <span .tag_hide_busy>
+                         <span .hide_busy> #{seminarDescription (entityVal evt)}
+                         |]
+            _ -> [whamlet|
+                         ^{ownerFlag}
+                         <span .tag_hide_hide>
+                         <span .hide_hide> #{seminarDescription (entityVal evt)}
+                         |]
+
+linkWidget :: Maybe AuthID -> Entity Seminar -> WidgetFor App ()
+linkWidget maid evt =
+  let semlink =
+        if seminarLink (entityVal evt) == "" then [whamlet||] else [whamlet|<a href=#{seminarLink $ entityVal evt}> link|]
+  in
+    case whatToShow maid evt of
+      ShowAsBusy -> [whamlet| --- |]
+      ShowFullInfo -> case maid of
+        Nothing -> semlink
+        Just aid -> if seminarOwner (entityVal evt) == unpack aid
+          then semlink
+          else
+          case seminarShowToAll (entityVal evt) of
+            2 -> semlink
+            1 -> case seminarShowToGroup (entityVal evt) of
+              2 -> semlink
+              1 -> [whamlet| --- |]
+              0 -> [whamlet| --- |]
+            0 -> case seminarShowToGroup (entityVal evt) of
+              2 -> semlink
+              1 -> [whamlet| --- |]
+
+getSeminarsInInterval :: Maybe AuthID -> [Entity Seminar] -> (Day, Day) -> [(Day, [Entity Seminar])]
+getSeminarsInInterval maid es (s,e) = [ let f = flip Prelude.filter in
+  (d,
+   f es $ \evt -> let  d' = (seminarStartDate $ entityVal evt)
+                       w' = toInteger (seminarRepeatWeeks $ entityVal evt)
+                  in  d >= d'
+                      && diffDays d d' <= 7 * w'
+                      && dayOfWeek d' == dayOfWeek d
+                      && case whatToShow maid evt of
+                           Hide -> False
+                           _ -> True
+  )
   | d <- [s..e]]
 
 collectIds :: [(Day, [Entity Seminar])] -> [Int64]
@@ -284,6 +438,8 @@ noLoginPage = [whamlet|
 
 stylesheet = addStylesheetRemote "https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css"
 
+data UserType = Me | GroupMember | Public
+
 getHomeR :: Handler Html
 getHomeR = do
   mnm <- lookupSession "_NAME"
@@ -292,11 +448,12 @@ getHomeR = do
   (nForm, nEncType) <- generateFormPost (seminarForm Nothing $ unpack $ fromMaybe "UNKNOWN" mnm)
   dayNow <- liftIO (utctDay <$> getCurrentTime)
   ysd <- getYesod
-  maid <- maybeAuthId
+  eaid <- idLookup
+  let maid = case eaid of { Left _ -> Nothing ; Right aid -> Just aid }
   allSems <- runDB $ selectList [] [Asc SeminarStartTime]
   let intrvl = getIntervalM dayNow requestedPeriod
   let (s,e) = fromMaybe (dayNow, addDays 2 dayNow) intrvl
-  let matchingSeminars = getSeminarsInInterval allSems (s,e)
+  let matchingSeminars = getSeminarsInInterval maid allSems (s,e)
   delPairs <- sequence [
       (\f -> (i,f)) <$> generateFormPost (keyForm i "delete")
       | i <- collectIds $ matchingSeminars
@@ -318,18 +475,14 @@ getHomeR = do
                   <th #th_link> maybe link
                   <th #th_resp> added by
                   <th #th_delete> delete
-                $forall (d, evEs) <- getSeminarsInInterval allSems (s,e)
+                $forall (d, evEs) <- matchingSeminars
                   $forall evE <- evEs
                     <tr>
                       <td .td_date> #{show d}
                       <td .td_time> #{show $ seminarStartTime $ entityVal evE}
-                      <td .td_desc> #{pack $ seminarDescription $ entityVal evE}
-                      $if (seminarLink $ entityVal evE) == ""
-                        <td .td_link> no link 
-                      $else 
-                        <td .td_link>
-                          <a href=#{seminarLink $ entityVal evE}> link
-                      <td .td_resp> #{pack $ seminarResponsiblePerson $ entityVal evE}
+                      <td .td_desc> ^{descriptionWidget maid evE}
+                      <td .td_link> ^{linkWidget maid evE}
+                      <td .td_resp> #{seminarResponsiblePerson $ entityVal evE}
                       $maybe uid <- maid
                         $if uid == (pack $ seminarOwner $ entityVal evE)
                           <td>  
@@ -349,8 +502,8 @@ getHomeR = do
                         <td> not logged in
           |]
         Nothing -> errorPage ("there was an error in parsing time interval" :: String)
-  case maid of
-    Nothing -> defaultLayout $ do
+  case eaid of
+    Left NotLoggedIn -> defaultLayout $ do
       stylesheet
       toWidgetHead [julius|#{rawJS ourjs}|]
       [whamlet|
@@ -362,7 +515,20 @@ getHomeR = do
           ^{semList}
           <a href=@{AuthR LoginR} style="font-size:28pt">login
         |]
-    Just aid | getAll (mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ]) ->
+    Left (NotAllowed aid) -> defaultLayout $ do
+      stylesheet
+      toWidgetHead [julius|#{rawJS ourjs}|]
+      [whamlet|
+          <p #p_header>
+          <h2> User #{aid} is not on our list
+          Enter time interval:
+          <span #tag_timeinterval>
+          <form method=get action=@{HomeR} enctype=#{pEncType} class="form-horizontal">
+            ^{pForm}
+          ^{semList}
+          <a href=@{AuthR LoginR} style="font-size:28pt">login
+        |]
+    Right aid | getAll (mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ]) ->
                 defaultLayout $ do
                   toWidgetHead [julius|#{rawJS ourjs}|]
                   stylesheet
@@ -407,28 +573,24 @@ postNewR = do
   ysd <- getYesod
   case result of
         FormSuccess newSem -> do
-          maid <- maybeAuthId
-          case maid of
-            Just aid | getAll (mconcat [ All (aid /= pack x) | x <- Foundation.users ysd ]) ->
-                        liftIO (
-                          putStrLn (unauthorizedUserMsg aid) >>
-                          SIO.hPutStrLn (logFileHandle ysd) (unauthorizedUserMsg aid) >>
-                          SIO.hFlush (logFileHandle ysd)
-                          ) >> defaultLayout (notAuthorizedPage aid)
-                     | otherwise -> case mkSeminar aid newSem  of
-                        Just ns -> do
-                          runDB (insert ns)
-                          redirect HomeR
-                        Nothing -> defaultLayout $ errorPage ("DATE or TIME PARSE ERROR" :: String)
-            _ -> defaultLayout $ errorPage ("Invalide input, please try again" :: String)
+          eaid <- idLookup
+          case eaid of
+            Left (NotAllowed aid) -> defaultLayout (notAuthorizedPage aid)
+            Left NotLoggedIn -> defaultLayout noLoginPage
+            Right aid ->
+              case mkSeminar aid newSem  of
+                Just ns -> do
+                  runDB (insert ns)
+                  redirect HomeR
+                Nothing -> defaultLayout $ errorPage ("DATE or TIME PARSE ERROR" :: String)
         _ -> defaultLayout $ errorPage ("Something wrong with the input. Are you logged in?" :: String)
 
 postDelR :: Handler Html
 postDelR = do
-  maid <- maybeAuthId
+  eaid <- idLookup
   ((result, widget), enctype) <- runFormPost (keyForm (-1) "UNUSED")
-  case maid of
-    Just aid ->
+  case eaid of
+    Right aid ->
       case result of
         FormSuccess ds -> do
           let k = toSqlKey $ delId ds
@@ -443,7 +605,8 @@ postDelR = do
                   else defaultLayout $ notAuthorizedPage aid
             Nothing -> defaultLayout $ errorPage ("there is no such record" :: String)
         _ -> defaultLayout $ errorPage("form not understood" :: String)
-    Nothing -> defaultLayout noLoginPage
+    Left NotLoggedIn -> defaultLayout noLoginPage
+    Left (NotAllowed aid) -> defaultLayout $ notAuthorizedPage aid
 
 getEditR :: Handler Html
 getEditR = do
