@@ -94,4 +94,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
     }
     document.getElementById("tag_timeinterval").appendChild(monthBtn);
+    Array.from(document.getElementsByClassName('td_date')).forEach(x => {
+      var parsedDate = new Date(x.innerText.trim());
+      var today = new Date();
+      var is_today = ( parsedDate.getTime() - today.getTime() ) < 24*60*60*1000 ;
+      var is_today_or_tomorrow = ( parsedDate.getTime() - today.getTime() ) < 48*60*60*1000 ;
+      x.innerText = `${parsedDate.toLocaleDateString('en-US',{ weekday : 'short' })} ${x.innerText}`
+      if (is_today) { 
+        x.style.backgroundColor = "red" ; 
+        x.style.color = "white" ; 
+      } else if (is_today_or_tomorrow) {
+        x.style.backgroundColor = "yellow" ;
+      }
+
+      }
+      )
+
 }, false);
