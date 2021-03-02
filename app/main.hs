@@ -139,7 +139,7 @@ instance YesodAuth App where
   authHttpManager = getsYesod httpManager
   maybeAuthId = lookupSession "_GMAIL"
 
-data RejectionReason = NotLoggedIn | NotAllowed Text
+data RejectionReason = NotLoggedIn | NotAllowed AuthID
 
 idLookup :: Handler (Either RejectionReason AuthID)
 idLookup = do
